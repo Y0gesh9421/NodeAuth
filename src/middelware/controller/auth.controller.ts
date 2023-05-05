@@ -1,37 +1,79 @@
-import { Request, Response } from "express";
+import { NextFunction, Request, Response } from "express";
 import bcrypt from "bcrypt"
 import { sign, verify } from 'jsonwebtoken';
 import { User } from "../entity/user";
 import { AppDataSource } from "../../database/db";
 import { UserCreationDto } from "../dto/user.dto";
+import validator from 'validator';
+import { error } from "console";
+import { genOtp } from "../../mailer/service/mailer.service";
+import { sendMail } from "../../mailer/service/mailer.service";
 
-const userRepository = AppDataSource.getRepository(User)
+
+export const userRepository = AppDataSource.getRepository(User)
 
 
 export const Register = async (req: Request, res: Response) => {
     console.log(req.body)
     try {
         const body: UserCreationDto = req.body
-        const { name, email, password } = body;
+        const { name, email, password, mobileNo, role, permissions } = body;
+        if (!validator.isAlpha(name)) {
+            res.status(400).send({ Message: "Name should have alphabets only" })
+            throw error;
+        };
+        if (!validator.isEmail(email)) {
+            res.status(400).send({ Message: "Invalid email" })
+            throw error;
+        };
+        if (!validator.isStrongPassword(password,
+            {
+                minLength: 8,
+                minLowercase: 1,
+                minUppercase: 1,
+                minNumbers: 1
+            }
+        )) {
+            res.status(400).send({ Message: "Weak password" })
+            throw error;
+        };
+        if (!validator.isLength(mobileNo, { min: 10, max: 10 })) {
+            res.status(400).send({ Message: "Mobile number should be 10 digits only" })
+            throw error;
+        };
+        const otp: string = await genOtp();
+        try {
+            const user = await userRepository.save({
+                name,
+                email,
+                password: await bcrypt.hash(password, 10),
+                mobileNo,
+                otp,
+                role,
+                permissions
+            })
+            console.log('user', user)
+            sendMail(email, otp)
+            res.send({ id: user.id, email: user.email, name: user.name, mobileNo: user.mobileNo, role: user.role, permissions: user.permissions, verifiedEmail: user.verifiedEmail });
+        }
+        catch {
+            throw new Error("Error while storing data")
+        }
 
-        const user = await userRepository.save({
-            name,
-            email,
-            password: await bcrypt.hash(password, 10)
-        })
-        console.log('user', user)
-
-        res.send({ id: user.id, email: user.email, name: user.name });
     }
     catch {
-        res.send({ message: "Validation failed" })
+
+        console.log('Error in input data')
+        throw new Error("Error while validating data")
     }
 
 
 }
 
+
+
 export const Login = async (req: Request, res: Response) => {
-    const { email, password } = req.body;
+    const { email, password, } = req.body;
 
     const user = await userRepository.findOne({
         where: {
@@ -42,7 +84,7 @@ export const Login = async (req: Request, res: Response) => {
 
     if (!user) {
         return res.status(400).send({
-            message: 'Invalid Credentials'
+            message: 'Invalid email'
         })
     }
 
@@ -52,37 +94,46 @@ export const Login = async (req: Request, res: Response) => {
         })
     }
 
-    const accessToken = sign({
-        id: user.id
-    }, "access_secret", { expiresIn: 60 * 60 });
+    if (user.verifiedEmail) {
+        const accessToken = sign({
+            email: user.email
+        }, "access_secret", { expiresIn: 60 * 60 });
 
-    const refreshToken = sign({
-        id: user.id
-    }, "refresh_secret", { expiresIn: 24 * 60 * 60 })
+        const refreshToken = sign({
+            email: user.email
+        }, "refresh_secret", { expiresIn: 24 * 60 * 60 })
 
-    res.cookie('accessToken', accessToken, {
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000
-    });
+        res.cookie('accessToken', accessToken, {
+            httpOnly: true,
+            maxAge: 24 * 60 * 60 * 1000
+        });
 
-    res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        maxAge: 7 * 24 * 60 * 60 * 1000
-    })
+        res.cookie('refreshToken', refreshToken, {
+            httpOnly: true,
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        })
 
-    res.send({
-        message: 'success'
-    });
+        res.send({
+            message: 'success'
+        });
+
+    }
+
+    if (!user.verifiedEmail) {
+        res.send({ Messsage: " Account not verified " })
+    }
 }
 
-export const AuthenticatedUser = async (req: Request, res: Response) => {
+export const AuthenticatedUser = async (req: Request, res: Response, next: NextFunction) => {
     try {
         console.log("req.cookies", req.cookies);
         const accessToken = req.cookies.accessToken;
 
         const payload: any = verify(accessToken, "access_secret");
+        console.log("🚀 ~ file: auth.controller.ts:127 ~ AuthenticatedUser ~ payload:", payload)
 
         if (!payload) {
+            console.log("in payload")
             return res.status(401).send({
                 message: 'Unauthenticated'
             })
@@ -93,16 +144,17 @@ export const AuthenticatedUser = async (req: Request, res: Response) => {
                 id: payload.id
             }
         });
+        console.log("🚀 ~ file: auth.controller.ts:140 ~ AuthenticatedUser ~ user:", user)
 
         if (!user) {
+            console.log('in user')
             return res.status(401).send({
                 message: 'Unauthenticated'
             })
         }
 
         const { password, ...data } = user;
-
-        res.send(data);
+        next()
 
     } catch (e) {
         console.log(e)

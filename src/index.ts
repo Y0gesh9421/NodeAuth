@@ -7,8 +7,9 @@ import bodyParser from "body-parser";
 import cookieParser from 'cookie-parser';
 
 const app = express();
-dotenv.config()
+dotenv.config();
 const port = process.env.PORT;
+app.use(express.json());
 app.use(bodyParser.json());
 app.use(cookieParser());
 
@@ -21,6 +22,8 @@ try {
         })
 
     app.use(router)
+
+
 
     app.get("/", (req: Request, res: Response) => {
         res.send("Hello world!");
